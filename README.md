@@ -1,7 +1,5 @@
-# Max-cu.github.io
+# Chem plant
 
-冰蓝色化工装置的 WebGL 页面，视觉风格仿照 [/0z5a](https://0z5a.github.io/)。
+一份单文件 WebGL 化工厂场景，视觉风格仿照 [/0z5a](https://0z5a.github.io/)。
 
-An ice-blue WebGL chem-plant page, in the visual style of [/0z5a](https://0z5a.github.io/).
-
-在线预览：[https://max-cu.github.io/](https://max-cu.github.io/)
+在线预览：https://max-cu.github.io/
