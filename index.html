@@ -1,0 +1,1424 @@
+<!DOCTYPE html>
+<html lang="">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title></title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E">
+<style>
+/* Ice-blue void, grain and vignette over a fixed WebGL scene. */
+:root{
+  --aqua:#7fd9e4;
+  --pale:#e9fbfc;
+  --line:#4fb9c9;
+  --deep:#0b3a4e;
+  --panel:#bfeef2;
+}
+html,body{margin:0;background:#fff;color:var(--deep)}
+html{scrollbar-width:none}
+body{overflow-x:hidden;min-height:100%}
+body::-webkit-scrollbar{display:none}
+#gl{
+  position:fixed;inset:0;width:100%;height:100%;
+  display:block;z-index:0;pointer-events:none;
+}
+#vig{
+  position:fixed;inset:0;z-index:30;pointer-events:none;
+  background:radial-gradient(ellipse at 48% 40%, transparent 64%, rgba(10,40,64,.08) 100%);
+}
+#grade{
+  position:fixed;left:-140px;top:-140px;width:calc(100vw + 280px);height:calc(100vh + 280px);
+  z-index:31;pointer-events:none;will-change:transform;
+  animation:grain .48s steps(1) infinite;
+}
+@keyframes grain{
+  0%{transform:translate(0,0)}
+  25%{transform:translate(61px,-36px)}
+  50%{transform:translate(-43px,72px)}
+  75%{transform:translate(29px,48px)}
+}
+@media (prefers-reduced-motion:reduce){#grade{animation:none}}
+
+#page{position:relative;z-index:1;height:480vh}
+
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="vig"></div>
+<div id="grade"></div>
+<main id="page"></main>
+<script>
+/* Faceted ice-blue chemical plant. One static buffer, tones baked from a fixed light. */
+(() => {
+  const TAU = Math.PI * 2;
+  const qs = new URLSearchParams(location.search);
+  const STILL = qs.has('still');
+  const AT = qs.has('at') ? Math.min(1, Math.max(0, parseFloat(qs.get('at')) || 0)) : null;
+  const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const hex = h => [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255];
+  const PAL = {
+    paper: ['#e7f6fc', '#6ec4e6', '#145a86'].map(hex),
+    shade: ['#b7dff0', '#3c94c4', '#0c3e68'].map(hex),
+    ink:   ['#c5e4f4', '#2f86b6', '#0a3356'].map(hex),
+    dish:  ['#f4fbfd', '#c9e9f6', '#7ec0dc'].map(hex),
+    night: ['#123044', '#0b2434', '#061820'].map(hex),
+    pipe:  ['#d4f0f8', '#54b0d6', '#10486e'].map(hex),
+    deck:  ['#a9d4e6', '#348aaf', '#0a3854'].map(hex),
+    band:  ['#f3fbfd', '#9ad4ea', '#4ea4c8'].map(hex),
+    ring:  ['#f7fdfe', '#d7eef6', '#b7dcea'].map(hex),
+    glow:  ['#e7fbff', '#d6f6ff', '#c8f3ff'].map(hex),
+    red:   ['#ff4d68', '#e01e40', '#8e1630'].map(hex),
+  };
+  const LIGHT = norm([-0.62, 0.72, 0.32]);
+  const NCOL = [1, 1, 1];
+
+  const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  const mul = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  function norm(a) {
+    const l = Math.hypot(a[0], a[1], a[2]);
+    if (l < 1e-8) return [0, 1, 0];
+    return [a[0] / l, a[1] / l, a[2] / l];
+  }
+  function perp(t) {
+    const a = Math.abs(t[1]) > 0.85 ? [1, 0, 0] : [0, 1, 0];
+    return norm(cross(t, a));
+  }
+  function rot(v, axis, ang) {
+    const k = norm(axis), c = Math.cos(ang), s = Math.sin(ang);
+    const cr = cross(k, v), d = dot(k, v);
+    return [
+      v[0] * c + cr[0] * s + k[0] * d * (1 - c),
+      v[1] * c + cr[1] * s + k[1] * d * (1 - c),
+      v[2] * c + cr[2] * s + k[2] * d * (1 - c),
+    ];
+  }
+  const aoAt = y => 0.92 + 0.08 * clamp(y / 18, 0, 1);
+
+  function shade(n, mat, ao) {
+    if (mat === 'glow') return PAL.glow[0];
+    const d = dot(n, LIGHT);
+    const p = PAL[mat] || PAL.paper;
+    const c = d > 0.58 ? p[0] : d > 0.04 ? p[1] : p[2];
+    const up = n[1] * 0.5 + 0.5;
+    const k = (ao == null ? 1 : ao) * (0.96 + 0.04 * up);
+    return [c[0] * k, c[1] * k, c[2] * k];
+  }
+
+  const V = [];
+  let dropped = 0;
+  function push(p, c, sw, g) {
+    V.push(p[0], p[1], p[2], c[0], c[1], c[2], sw || 0, g || 0);
+  }
+  function finite(p) { return p && isFinite(p[0]) && isFinite(p[1]) && isFinite(p[2]); }
+  function tri(a, b, c, mat, interior, ao) {
+    if (V.length > 2800000) { dropped++; return; }
+    if (!finite(a) || !finite(b) || !finite(c)) return;
+    const cr = cross(sub(b, a), sub(c, a));
+    const area = Math.hypot(cr[0], cr[1], cr[2]);
+    if (area < 1e-7) return;
+    let n = mul(cr, 1 / area);
+    if (interior && dot(n, sub(a, interior)) < 0) n = mul(n, -1);
+    const col = shade(n, mat, ao);
+    const g = mat === 'glow' ? 1 : 0;
+    push(a, col, 0, g); push(b, col, 0, g); push(c, col, 0, g);
+  }
+  function quad(a, b, c, d, mat, interior, ao) {
+    tri(a, b, c, mat, interior, ao);
+    tri(a, c, d, mat, interior, ao);
+  }
+  function hull(c, mat, ao) {
+    const o = mul(c.reduce(add, [0, 0, 0]), 1 / 8);
+    quad(c[0], c[1], c[2], c[3], mat, o, ao);
+    quad(c[4], c[5], c[6], c[7], mat, o, ao);
+    for (let i = 0; i < 4; i++) {
+      const j = (i + 1) % 4;
+      quad(c[i], c[j], c[j + 4], c[i + 4], mat, o, ao);
+    }
+  }
+  function box(x, y, z, w, h, d, mat, ry, ao) {
+    ry = ry || 0;
+    const cs = Math.cos(ry), sn = Math.sin(ry);
+    const P = (a, b, e) => [x + a * w / 2 * cs + e * d / 2 * sn, y + b * h / 2, z - a * w / 2 * sn + e * d / 2 * cs];
+    hull([
+      P(-1, -1, -1), P(1, -1, -1), P(1, -1, 1), P(-1, -1, 1),
+      P(-1, 1, -1), P(1, 1, -1), P(1, 1, 1), P(-1, 1, 1),
+    ], mat, ao == null ? aoAt(y) : ao);
+  }
+  function beam(a, b, t, mat, ao) {
+    const d = sub(b, a);
+    const L = Math.hypot(d[0], d[1], d[2]);
+    if (L < 0.05 || !(t > 0)) return;
+    const ax = mul(d, 1 / L);
+    const u = perp(ax);
+    const v = cross(ax, u);
+    const s = t / 2;
+    const ring = o => [
+      add(o, add(mul(u, -s), mul(v, -s))),
+      add(o, add(mul(u, s), mul(v, -s))),
+      add(o, add(mul(u, s), mul(v, s))),
+      add(o, add(mul(u, -s), mul(v, s))),
+    ];
+    hull(ring(a).concat(ring(b)), mat, ao == null ? aoAt((a[1] + b[1]) / 2) : ao);
+  }
+
+  function loftAxis(fixed, rings, n, mat, axis) {
+    /* rings: {t, ra, rb}. axis 'y' grows up; 'x' grows along x. ra/rb are the two radii. */
+    const P = (k, i) => {
+      const r = rings[k], a = (i / n) * TAU;
+      const ca = Math.cos(a) * r.ra, sa = Math.sin(a) * r.rb;
+      if (axis === 'x') return [r.t, fixed[0] + ca, fixed[1] + sa];
+      return [fixed[0] + ca, r.t, fixed[1] + sa];
+    };
+    for (let k = 0; k < rings.length - 1; k++) {
+      const y = axis === 'x' ? fixed[0] : (rings[k].t + rings[k + 1].t) / 2;
+      const ao = aoAt(axis === 'x' ? fixed[0] : y);
+      const midT = (rings[k].t + rings[k + 1].t) / 2;
+      const ctr = axis === 'x' ? [midT, fixed[0], fixed[1]] : [fixed[0], midT, fixed[1]];
+      for (let i = 0; i < n; i++) quad(P(k, i), P(k, i + 1), P(k + 1, i + 1), P(k + 1, i), mat, ctr, ao);
+    }
+  }
+  const loftY = (x, z, rings, n, mat) => loftAxis([x, z], rings, n, mat, 'y');
+  const loftX = (y, z, rings, n, mat) => loftAxis([y, z], rings, n, mat, 'x');
+
+  function annulus(cx, y, cz, r0, r1, thick, mat, sides, ao) {
+    const y0 = y, y1 = y + thick;
+    const aoV = ao == null ? aoAt(y + thick * 0.5) : ao;
+    sides = sides || 18;
+    for (let i = 0; i < sides; i++) {
+      const a0 = (i / sides) * TAU, a1 = ((i + 1) / sides) * TAU;
+      const c0 = Math.cos(a0), s0 = Math.sin(a0), c1 = Math.cos(a1), s1 = Math.sin(a1);
+      const o0x = cx + c0 * r1, o0z = cz + s0 * r1, o1x = cx + c1 * r1, o1z = cz + s1 * r1;
+      const i0x = cx + c0 * r0, i0z = cz + s0 * r0, i1x = cx + c1 * r0, i1z = cz + s1 * r0;
+      const mid = [cx, (y0 + y1) / 2, cz];
+      quad([i0x, y1, i0z], [o0x, y1, o0z], [o1x, y1, o1z], [i1x, y1, i1z], mat, [cx, y0 - 1, cz], aoV);
+      quad([o0x, y0, o0z], [i0x, y0, i0z], [i1x, y0, i1z], [o1x, y0, o1z], mat, [cx, y1 + 1, cz], aoV);
+      quad([o0x, y0, o0z], [o1x, y0, o1z], [o1x, y1, o1z], [o0x, y1, o0z], mat, mid, aoV);
+      const mx = cx + c0 * (r0 + r1) * 0.5, mz = cz + s0 * (r0 + r1) * 0.5;
+      quad([i0x, y1, i0z], [i1x, y1, i1z], [i1x, y0, i1z], [i0x, y0, i0z], mat, [mx, (y0 + y1) / 2, mz], aoV);
+    }
+  }
+  function disc(c, normal, radius, mat, sides, ao) {
+    const n = norm(normal), u = perp(n), v = cross(n, u);
+    const interior = sub(c, mul(n, Math.max(radius, 0.4)));
+    for (let i = 0; i < sides; i++) {
+      const a0 = (i / sides) * TAU, a1 = ((i + 1) / sides) * TAU;
+      const p0 = add(c, add(mul(u, Math.cos(a0) * radius), mul(v, Math.sin(a0) * radius)));
+      const p1 = add(c, add(mul(u, Math.cos(a1) * radius), mul(v, Math.sin(a1) * radius)));
+      tri(c, p0, p1, mat, interior, ao);
+    }
+  }
+  function sphere(c, r, mat, seg, rings) {
+    seg = seg || 16; rings = rings || 10;
+    const pt = (rr, yy, a) => [c[0] + Math.cos(a) * rr, yy, c[2] + Math.sin(a) * rr];
+    for (let j = 0; j < rings; j++) {
+      const t0 = -Math.PI / 2 + Math.PI * j / rings;
+      const t1 = -Math.PI / 2 + Math.PI * (j + 1) / rings;
+      const y0 = c[1] + Math.sin(t0) * r, y1 = c[1] + Math.sin(t1) * r;
+      const r0 = Math.cos(t0) * r, r1 = Math.cos(t1) * r;
+      const ao = aoAt((y0 + y1) / 2);
+      for (let i = 0; i < seg; i++) {
+        const a0 = (i / seg) * TAU, a1 = ((i + 1) / seg) * TAU;
+        if (Math.abs(r0) < 1e-3) tri([c[0], y0, c[2]], pt(r1, y1, a1), pt(r1, y1, a0), mat, c, ao);
+        else if (Math.abs(r1) < 1e-3) tri([c[0], y1, c[2]], pt(r0, y0, a0), pt(r0, y0, a1), mat, c, ao);
+        else quad(pt(r0, y0, a0), pt(r0, y0, a1), pt(r1, y1, a1), pt(r1, y1, a0), mat, c, ao);
+      }
+    }
+  }
+  function torus(center, R, tube, mat, maj, min, axis) {
+    maj = maj || 28; min = min || 8;
+    const ax = norm(axis || [0, 1, 0]);
+    const u = perp(ax), v = cross(ax, u);
+    for (let i = 0; i < maj; i++) {
+      const a0 = (i / maj) * TAU, a1 = ((i + 1) / maj) * TAU;
+      const c0 = add(center, add(mul(u, Math.cos(a0) * R), mul(v, Math.sin(a0) * R)));
+      const c1 = add(center, add(mul(u, Math.cos(a1) * R), mul(v, Math.sin(a1) * R)));
+      const rad0 = norm(sub(c0, center)), rad1 = norm(sub(c1, center));
+      const ctr = mul(add(c0, c1), 0.5);
+      for (let j = 0; j < min; j++) {
+        const b0 = (j / min) * TAU, b1 = ((j + 1) / min) * TAU;
+        const q = (c, rad, b) => add(c, add(mul(rad, Math.cos(b) * tube), mul(ax, Math.sin(b) * tube)));
+        quad(q(c0, rad0, b0), q(c1, rad1, b0), q(c1, rad1, b1), q(c0, rad0, b1), mat, ctr, aoAt(center[1]));
+      }
+    }
+  }
+
+  function clean(pts) {
+    const o = [];
+    for (const p of pts) if (!o.length || dist(p, o[o.length - 1]) > 1e-4) o.push(p);
+    return o;
+  }
+  function filletPath(pts, rad, segs) {
+    pts = clean(pts);
+    if (pts.length < 3 || !(rad > 0)) return pts;
+    const out = [pts[0]];
+    for (let i = 1; i < pts.length - 1; i++) {
+      const a = pts[i - 1], b = pts[i], c = pts[i + 1];
+      const va = sub(a, b), vc = sub(c, b);
+      const la = Math.hypot(va[0], va[1], va[2]), lc = Math.hypot(vc[0], vc[1], vc[2]);
+      if (la < 1e-4 || lc < 1e-4) { out.push(b); continue; }
+      const da = mul(va, 1 / la), dc = mul(vc, 1 / lc);
+      const phi = Math.acos(clamp(dot(da, dc), -1, 1));
+      if (phi < 0.12 || Math.PI - phi < 0.08) { out.push(b); continue; }
+      const setback = Math.min(rad / Math.tan(phi / 2), la * 0.46, lc * 0.46);
+      const rEff = setback * Math.tan(phi / 2);
+      const p1 = add(b, mul(da, setback));
+      const p2 = add(b, mul(dc, setback));
+      const bis = norm(add(da, dc));
+      const center = add(b, mul(bis, rEff / Math.sin(phi / 2)));
+      const v1 = sub(p1, center), v2 = sub(p2, center);
+      const axis = cross(v1, v2);
+      if (Math.hypot(axis[0], axis[1], axis[2]) < 1e-6) { out.push(b); continue; }
+      const ang = Math.acos(clamp(dot(norm(v1), norm(v2)), -1, 1));
+      const nseg = Math.max(2, Math.round((segs || 5) * ang / (Math.PI / 2)));
+      for (let s = 0; s <= nseg; s++) out.push(add(center, rot(v1, axis, ang * s / nseg)));
+    }
+    out.push(pts[pts.length - 1]);
+    return clean(out);
+  }
+  function subdivide(pts, maxLen) {
+    if (pts.length < 2) return pts;
+    const o = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i], L = dist(a, b);
+      const n = Math.max(1, Math.ceil(L / maxLen));
+      for (let k = 1; k <= n; k++) o.push(lerp(a, b, k / n));
+    }
+    return o;
+  }
+  function sweep(pts, r, mat, sides, opt) {
+    pts = clean(pts);
+    if (pts.length < 2 || !(r > 0)) return;
+    const n = pts.length;
+    const T = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const i0 = Math.max(0, i - 1), i1 = Math.min(n - 1, i + 1);
+      T[i] = norm(sub(pts[i1], pts[i0]));
+    }
+    T[0] = norm(sub(pts[1], pts[0]));
+    T[n - 1] = norm(sub(pts[n - 1], pts[n - 2]));
+    let Nrm = perp(T[0]);
+    const frames = [];
+    for (let i = 0; i < n; i++) {
+      if (i > 0) {
+        const axis = cross(T[i - 1], T[i]);
+        const s = Math.hypot(axis[0], axis[1], axis[2]);
+        const c = clamp(dot(T[i - 1], T[i]), -1, 1);
+        if (s > 1e-5) Nrm = rot(Nrm, mul(axis, 1 / s), Math.atan2(s, c));
+        Nrm = sub(Nrm, mul(T[i], dot(Nrm, T[i])));
+        const ln = Math.hypot(Nrm[0], Nrm[1], Nrm[2]);
+        Nrm = ln < 1e-5 ? perp(T[i]) : mul(Nrm, 1 / ln);
+      }
+      frames.push({ p: pts[i], t: T[i], n: Nrm, b: cross(T[i], Nrm) });
+    }
+    const ring = f => {
+      const o = [];
+      for (let i = 0; i < sides; i++) {
+        const a = (i / sides) * TAU;
+        o.push(add(f.p, add(mul(f.n, Math.cos(a) * r), mul(f.b, Math.sin(a) * r))));
+      }
+      return o;
+    };
+    let prev = ring(frames[0]);
+    for (let i = 1; i < n; i++) {
+      const cur = ring(frames[i]);
+      const ao = aoAt((frames[i - 1].p[1] + frames[i].p[1]) / 2);
+      for (let k = 0; k < sides; k++) {
+        const k1 = (k + 1) % sides;
+        quad(prev[k], cur[k], cur[k1], prev[k1], mat, frames[i].p, ao);
+      }
+      prev = cur;
+    }
+    const cap = (f, dir) => disc(f.p, mul(f.t, dir), r, mat, sides, aoAt(f.p[1]));
+    if (opt.cap !== false) { cap(frames[0], -1); cap(frames[n - 1], 1); }
+    if (opt.flange) {
+      collar(frames[0], r * 1.42, 0.2, mat, sides);
+      collar(frames[n - 1], r * 1.42, 0.2, mat, sides);
+    }
+  }
+  function collar(frame, r, len, mat, sides) {
+    const t = frame.t;
+    const a = add(frame.p, mul(t, -len / 2));
+    const b = add(frame.p, mul(t, len / 2));
+    const ringAt = p => {
+      const o = [];
+      for (let i = 0; i < sides; i++) {
+        const ang = (i / sides) * TAU;
+        o.push(add(p, add(mul(frame.n, Math.cos(ang) * r), mul(frame.b, Math.sin(ang) * r))));
+      }
+      return o;
+    };
+    const r0 = ringAt(a), r1 = ringAt(b);
+    const ao = aoAt(frame.p[1]);
+    for (let k = 0; k < sides; k++) {
+      const k1 = (k + 1) % sides;
+      quad(r0[k], r1[k], r1[k1], r0[k1], mat, frame.p, ao);
+    }
+  }
+  function route(pts, r, mat, opt) {
+    opt = opt || {};
+    const bend = opt.bend == null ? Math.max(0.5, r * 2.2) : opt.bend;
+    let path = filletPath(pts, bend, opt.arc || 5);
+    path = subdivide(clean(path), opt.step || 3.2);
+    sweep(clean(path), r, mat, opt.sides || 10, opt);
+  }
+
+  function band(x, z, y, r, mat, sides) {
+    annulus(x, y, z, r - 0.22, r * 1.085, 0.46, mat || 'band', sides || 18);
+  }
+  function platform(x, z, y, coreR, width) {
+    const r0 = coreR + 0.05, r1 = coreR + width;
+    annulus(x, y, z, r0, r1, 0.42, 'shade', 20);
+    annulus(x, y + 0.42, z, r1 - 0.34, r1 + 0.08, 0.36, 'paper', 20);
+    const posts = 12;
+    for (let i = 0; i < posts; i++) {
+      const a0 = (i / posts) * TAU + 0.15, a1 = ((i + 1) / posts) * TAU + 0.15;
+      const p0 = [x + Math.cos(a0) * r1, z + Math.sin(a0) * r1];
+      const p1 = [x + Math.cos(a1) * r1, z + Math.sin(a1) * r1];
+      beam([p0[0], y + 0.5, p0[1]], [p0[0], y + 1.45, p0[1]], 0.26, 'ink');
+      beam([p0[0], y + 1.38, p0[1]], [p1[0], y + 1.38, p1[1]], 0.24, 'ink');
+      beam([p0[0], y + 0.92, p0[1]], [p1[0], y + 0.92, p1[1]], 0.16, 'shade');
+    }
+    box(x + r1, y + 1.15, z, 0.42, 0.42, 0.42, 'glow', 0, 1);
+  }
+  function ladder(x, z, y0, y1, ang, radius, cage) {
+    const cx = x + Math.cos(ang) * radius, cz = z + Math.sin(ang) * radius;
+    const tx = -Math.sin(ang), tz = Math.cos(ang), w = 0.82;
+    const r0 = [cx - tx * w / 2, cz - tz * w / 2];
+    const r1 = [cx + tx * w / 2, cz + tz * w / 2];
+    beam([r0[0], y0, r0[1]], [r0[0], y1, r0[1]], 0.22, 'ink');
+    beam([r1[0], y0, r1[1]], [r1[0], y1, r1[1]], 0.22, 'ink');
+    for (let y = y0 + 0.48; y < y1 - 0.15; y += 0.64) beam([r0[0], y, r0[1]], [r1[0], y, r1[1]], 0.12, 'shade');
+    if (!cage) return;
+    const ox = Math.cos(ang), oz = Math.sin(ang);
+    for (let y = y0 + (y1 - y0) * 0.42; y < y1 - 0.3; y += 1.55) {
+      const pts = [];
+      for (let i = 0; i <= 7; i++) {
+        const a = Math.PI * i / 7;
+        pts.push([
+          cx + tx * Math.cos(a) * (w / 2) + ox * Math.sin(a) * 0.7,
+          y,
+          cz + tz * Math.cos(a) * (w / 2) + oz * Math.sin(a) * 0.7,
+        ]);
+      }
+      route(pts, 0.1, 'ink', { flange: false, bend: 0, sides: 6, step: 0.8, cap: true });
+    }
+  }
+  function headRings(t0, r, dir, steps) {
+    const rings = [], h = r * 0.5;
+    for (let i = 0; i <= steps; i++) {
+      const a = (i / steps) * Math.PI / 2;
+      rings.push({ t: t0 + dir * Math.sin(a) * h, ra: Math.max(0.05, Math.cos(a) * r), rb: Math.max(0.05, Math.cos(a) * r) });
+    }
+    return rings;
+  }
+  function column(o) {
+    const { x, z, r, h } = o;
+    const mat = o.mat || 'paper';
+    const sides = o.sides || 18;
+    box(x, 0.48, z, r * 3.1, 0.8, r * 3.1, 'deck');
+    loftY(x, z, [
+      { t: 0.5, ra: r * 1.42, rb: r * 1.42 },
+      { t: 1.7, ra: r * 1.16, rb: r * 1.16 },
+      { t: 2.7, ra: r, rb: r },
+    ], sides, mat);
+    const shellTop = h;
+    if (o.bulge) {
+      loftY(x, z, [
+        { t: 2.55, ra: r, rb: r },
+        { t: h * 0.34, ra: r, rb: r },
+        { t: h * 0.44, ra: r * 1.16, rb: r * 1.16 },
+        { t: h * 0.56, ra: r * 1.16, rb: r * 1.16 },
+        { t: h * 0.66, ra: r, rb: r },
+        { t: shellTop, ra: r, rb: r },
+      ], sides, mat);
+    } else {
+      loftY(x, z, [{ t: 2.55, ra: r, rb: r }, { t: shellTop, ra: r, rb: r }], sides, mat);
+    }
+    loftY(x, z, headRings(shellTop - 0.02, r, 1, 5), sides, 'dish');
+    const tip = shellTop + r * 0.5;
+    /* overhead nozzle only where a vapor line actually leaves the head */
+    if (o.vent) {
+      const nozR = Math.max(0.28, r * 0.26);
+      loftY(x, z, [{ t: tip - 0.02, ra: nozR, rb: nozR }, { t: tip + r * 0.62, ra: nozR, rb: nozR }], 10, 'ink');
+    }
+    if (!o.lattice) {
+      for (let y = 6.2; y < shellTop - 1.4; y += (o.tray || 5.4)) band(x, z, y, r, 'band', sides);
+    } else {
+      for (let y = 7; y < shellTop - 2; y += 12) band(x, z, y, r, 'band', sides);
+    }
+    const plats = [];
+    for (let y = o.p0 || 9; y < h - 3.5; y += (o.pgap || 13)) plats.push(y);
+    for (const y of plats) platform(x, z, y, r, o.plat || 1.65);
+    if (o.ladder !== false) ladder(x, z, 0.9, (plats.length ? plats[plats.length - 1] : h * 0.55) + 1.2, o.lang == null ? 0.55 : o.lang, r + (o.plat || 1.65) - 0.15, !!o.cage);
+    annulus(x, 0.78, z, r * 1.05, r * 2.05, 0.08, 'night', 18);
+    return { x, z, r, h, tip, top: tip + r * 0.62, plats, mat, vent: !!o.vent };
+  }
+  function lattice(x, z, top, coreR, opt) {
+    opt = opt || {};
+    const posts = 4;
+    const R = coreR + (opt.clear || 2.35);
+    const ang0 = opt.ang0 == null ? Math.PI / 4 : opt.ang0;
+    const P = [];
+    for (let i = 0; i < posts; i++) {
+      const a = ang0 + (i / posts) * TAU;
+      P.push([x + Math.cos(a) * R, z + Math.sin(a) * R]);
+    }
+    const levels = [];
+    const bay = opt.bay || 7.4;
+    for (let y = 0; y <= top; y += bay) levels.push(y);
+    if (top - levels[levels.length - 1] > bay * 0.45) levels.push(top);
+    else levels[levels.length - 1] = top;
+    const postT = opt.post || 0.86;
+    const girtT = opt.girt || 0.5;
+    const braceT = opt.brace || 0.4;
+    for (const p of P) beam([p[0], 0, p[1]], [p[0], top, p[1]], postT, 'ink');
+    for (const y of levels) {
+      for (let i = 0; i < posts; i++) {
+        const a = P[i], b = P[(i + 1) % posts];
+        beam([a[0], y, a[1]], [b[0], y, b[1]], girtT, 'ink');
+      }
+    }
+    for (let li = 0; li < levels.length - 1; li++) {
+      const y0 = levels[li], y1 = levels[li + 1];
+      for (let i = 0; i < posts; i++) {
+        const a = P[i], b = P[(i + 1) % posts];
+        beam([a[0], y0, a[1]], [b[0], y1, b[1]], braceT, 'ink');
+        beam([b[0], y0 + 0.2, b[1]], [a[0], y1 - 0.2, a[1]], braceT * 0.92, 'shade');
+      }
+    }
+  }
+function vesselX(x0, x1, y, z, r, mat) {
+  const sides = 14;
+  loftX(y, z, [{ t: x0, ra: r, rb: r }, { t: x1, ra: r, rb: r }], sides, mat || 'shade');
+  const grow = (t0, dir) => {
+    const rings = [], hh = r * 0.52;
+    for (let i = 0; i <= 4; i++) {
+      const a = (i / 4) * Math.PI / 2;
+      rings.push({ t: t0 + dir * Math.sin(a) * hh, ra: Math.max(0.05, Math.cos(a) * r), rb: Math.max(0.05, Math.cos(a) * r) });
+    }
+    loftX(y, z, rings, sides, 'dish');
+  };
+  grow(x1, 1);
+  grow(x0, -1);
+  if (y - r < 2.4) {
+    const top = Math.max(0.4, y - r * 0.45);
+    box(x0 + (x1 - x0) * 0.28, top / 2, z, r * 0.9, top, r * 1.65, 'ink');
+    box(x0 + (x1 - x0) * 0.72, top / 2, z, r * 0.9, top, r * 1.65, 'ink');
+  }
+}
+  function valve(x, y, z, s) {
+    s = s || 0.72;
+    box(x, y, z, s * 1.55, s * 1.25, s * 1.55, 'ink');
+    beam([x, y, z], [x, y + s * 1.45, z], s * 0.32, 'shade');
+    torus([x, y + s * 1.65, z], s * 0.9, s * 0.15, 'paper', 14, 6, [0, 1, 0]);
+  }
+  function windows(cx, cy, cz, w, h, d, cols, rows) {
+    const faces = [
+      { fw: w, fd: d, oz: cz + d / 2 + 0.1, ox: cx, axis: 'z', sign: 1 },
+      { fw: w, fd: d, oz: cz - d / 2 - 0.1, ox: cx, axis: 'z', sign: -1 },
+      { fw: d, fd: w, oz: cx + w / 2 + 0.1, ox: cz, axis: 'x', sign: 1 },
+      { fw: d, fd: w, oz: cx - w / 2 - 0.1, ox: cz, axis: 'x', sign: -1 },
+    ];
+    for (const f of faces) {
+      const m = 1.05;
+      const cw = (f.fw - 2 * m) / cols, rh = (h - 2 * m) / rows;
+      const ww = cw * 0.62, wh = rh * 0.7;
+      for (let c = 0; c < cols; c++) for (let r = 0; r < rows; r++) {
+        const u = -f.fw / 2 + m + cw * (c + 0.5);
+        const v = -h / 2 + m + rh * (r + 0.5);
+        const py = cy + v;
+        if (f.axis === 'z') box(cx + u, py, f.oz, ww, wh, 0.14, 'night', 0, 1);
+        else box(f.oz, py, cz + u, 0.14, wh, ww, 'night', 0, 1);
+      }
+    }
+  }
+  function parapet(x, z, w, d, y, ht, th, mat) {
+    box(x, y + ht / 2, z + d / 2 - th / 2, w, ht, th, mat);
+    box(x, y + ht / 2, z - d / 2 + th / 2, w, ht, th, mat);
+    box(x + w / 2 - th / 2, y + ht / 2, z, th, ht, d - th * 2, mat);
+    box(x - w / 2 + th / 2, y + ht / 2, z, th, ht, d - th * 2, mat);
+  }
+  function pennant(x, y, z) {
+    beam([x, y, z], [x, y + 4.4, z], 0.18, 'ink');
+    box(x, y + 4.15, z, 0.46, 0.36, 0.46, 'red');
+    const y0 = y + 2.85, y1 = y + 4.05, len = 2.5, n = 5;
+    for (let i = 0; i < n; i++) {
+      const t0 = i / n, t1 = (i + 1) / n;
+      const xa = x + len * t0, xb = x + len * t1;
+      const col = i % 2 ? PAL.red[1] : PAL.red[2];
+      const s0 = 0.15 + t0 * 0.7, s1 = 0.15 + t1 * 0.7;
+      const a = [xa, y0, z], b = [xb, y0, z], c = [xb, y1, z], d = [xa, y1, z];
+      push(a, col, s0, 0); push(b, col, s1, 0); push(c, col, s1, 0);
+      push(a, col, s0, 0); push(c, col, s1, 0); push(d, col, s0, 0);
+      const bk = [col[0] * 0.78, col[1] * 0.78, col[2] * 0.78];
+      push(a, bk, s0, 0); push(d, bk, s0, 0); push(c, bk, s1, 0);
+      push(a, bk, s0, 0); push(c, bk, s1, 0); push(b, bk, s1, 0);
+    }
+  }
+
+  function stack(x, z, h, r, mat) {
+    r = r || 1.05;
+    mat = mat || 'ink';
+    box(x, 0.35, z, r * 2.6, 0.7, r * 2.6, 'deck');
+    loftY(x, z, [
+      { t: 0.4, ra: r * 1.25, rb: r * 1.25 },
+      { t: 2.2, ra: r, rb: r },
+      { t: h - 1.4, ra: r * 0.92, rb: r * 0.92 },
+      { t: h, ra: r * 0.78, rb: r * 0.78 },
+    ], 12, mat);
+    annulus(x, h - 0.35, z, r * 0.55, r * 0.95, 0.35, 'night', 12);
+    /* aviation lights as tiny glow caps */
+    box(x + r * 0.7, h + 0.25, z, 0.28, 0.28, 0.28, 'glow', 0, 1);
+  }
+  function elevRails(cx, cz, y0, y1, half) {
+    half = half || 1.15;
+    /* two main guide rails + thin back stabilizers — no full square cage */
+    beam([cx - half, y0, cz], [cx - half, y1, cz], 0.32, 'ink');
+    beam([cx + half, y0, cz], [cx + half, y1, cz], 0.32, 'ink');
+    beam([cx - half * 0.5, y0, cz + half], [cx - half * 0.5, y1, cz + half], 0.18, 'shade');
+    beam([cx + half * 0.5, y0, cz + half], [cx + half * 0.5, y1, cz + half], 0.18, 'shade');
+    /* three thin landing ties only */
+    for (const y of [y0 + 0.25, y0 + (y1 - y0) * 0.48, y1 - 0.35]) {
+      beam([cx - half, y, cz], [cx + half, y, cz], 0.16, 'ink');
+    }
+    /* top sheave */
+    beam([cx - half - 0.12, y1 + 0.32, cz], [cx + half + 0.12, y1 + 0.32, cz], 0.32, 'ink');
+    beam([cx, y1, cz], [cx, y1 + 0.75, cz], 0.18, 'shade');
+    torus([cx, y1 + 0.9, cz], 0.45, 0.1, 'paper', 12, 5, [0, 0, 1]);
+  }
+
+  /* ---------- the plant, massed to the right of the opening view ---------- */
+  box(40, -7, 6, 102, 14, 56, 'deck', 0, 1);
+  box(42, 0.16, 5, 62, 0.28, 28, 'shade', 0, 1);
+
+  /* back bund */
+  box(44, 1.7, -10.5, 62, 3.4, 1.05, 'shade');
+  box(74.2, 1.35, -2, 1.0, 2.7, 18, 'shade');
+
+  /* control house: heavy base, lighter crown, window grid */
+  const BX = 10, BZ = 4.5;
+  box(BX, 4.3, BZ, 22, 8.6, 14, 'shade');
+  box(BX, 8.55, BZ, 23.4, 0.7, 15.3, 'dish');
+  box(BX, 11.85, BZ + 0.3, 17.2, 6.0, 10.6, 'paper');
+  parapet(BX, BZ + 0.3, 17.2, 10.6, 14.85, 1.15, 0.48, 'shade');
+  windows(BX, 4.3, BZ, 22, 8.6, 14, 8, 4);
+  windows(BX, 11.85, BZ + 0.3, 17.2, 6.0, 10.6, 6, 3);
+  box(BX + 3.2, 16.3, BZ - 1.4, 3.4, 1.5, 2.6, 'ink');
+  loftY(BX - 4.5, BZ + 2.2, [{ t: 14.9, ra: 0.55, rb: 0.55 }, { t: 19.2, ra: 0.55, rb: 0.55 }], 10, 'ink');
+  band(BX - 4.5, BZ + 2.2, 18.5, 0.7, 'band', 10);
+  /* stair up the east wall */
+  {
+    const n = 16, rise = 0.48, tread = 0.78;
+    for (let i = 0; i < n; i++) {
+      const hh = (i + 1) * rise;
+      box(BX + 12.3, hh / 2, BZ - 4.2 + (i + 0.5) * tread, 2.5, hh, tread * 0.96, i % 2 ? 'paper' : 'shade');
+    }
+    beam([BX + 13.7, 1.3, BZ - 4.2], [BX + 13.7, n * rise + 1.15, BZ - 4.2 + n * tread], 0.28, 'ink');
+    beam([BX + 10.9, 1.3, BZ - 4.2], [BX + 10.9, n * rise + 1.15, BZ - 4.2 + n * tread], 0.22, 'ink');
+    box(BX + 12.3, n * rise + 0.2, BZ - 4.2 + n * tread + 1.3, 3.4, 0.4, 2.8, 'paper');
+  }
+
+  /* Horton sphere */
+  {
+    const x = 25.5, z = 7.2, r = 3.65, y = r + 4.35;
+    sphere([x, y, z], r, 'paper', 18, 12);
+    torus([x, y, z], r + 0.08, 0.2, 'ink', 32, 7, [0, 1, 0]);
+    platform(x, z, y - 0.15, r, 1.25);
+    const legs = 5;
+    for (let i = 0; i < legs; i++) {
+      const a = (i / legs) * TAU + 0.35;
+      const foot = [x + Math.cos(a) * (r + 1.35), 0, z + Math.sin(a) * (r + 1.35)];
+      const hip = [x + Math.cos(a) * r * 0.62, y - r * 0.62, z + Math.sin(a) * r * 0.62];
+      beam(foot, hip, 0.48, 'ink');
+      box(foot[0], 0.28, foot[2], 1.25, 0.56, 1.25, 'deck');
+    }
+    for (let i = 0; i < legs; i++) {
+      const a0 = (i / legs) * TAU + 0.35, a1 = ((i + 1) / legs) * TAU + 0.35;
+      beam(
+        [x + Math.cos(a0) * (r + 1.15), 1.7, z + Math.sin(a0) * (r + 1.15)],
+        [x + Math.cos(a1) * (r + 1.15), 1.7, z + Math.sin(a1) * (r + 1.15)],
+        0.32, 'shade');
+    }
+    ladder(x, z, 0.6, y + 0.4, 0.15, r + 1.15, false);
+  }
+
+  const cols = [];
+  cols.push(column({ x: 34.2, z: 2.6, r: 2.45, h: 40, mat: 'shade', lang: 0.4 }));
+  cols.push(column({ x: 43, z: 7.6, r: 2.05, h: 50, mat: 'paper', ladder: false, pgap: 18, p0: 14, plat: 1.2, vent: true }));
+  cols.push(column({ x: 52.2, z: 1.8, r: 3.15, h: 36, mat: 'shade', bulge: true, lang: -0.4, plat: 1.85, vent: true }));
+  const D = column({ x: 61.5, z: 5.4, r: 2.3, h: 57, mat: 'paper', lattice: true, cage: true, lang: 2.0, plat: 1.45, pgap: 13, p0: 10, vent: true });
+  cols.push(D);
+  lattice(D.x, D.z, D.tip + 2.4, D.r, { clear: 2.4, bay: 7.6, post: 0.9, girt: 0.52, brace: 0.42 });
+  platform(D.x, D.z, D.tip + 0.4, D.r, 2.15);
+
+  /* personnel elevator — offset clear of column platforms, one bridge only */
+  const Bcol = cols[1];
+  const EL = {
+    x: Bcol.x + 0.2,
+    z: Bcol.z + Bcol.r + 3.75,
+    y0: 1.2,
+    y1: Math.min(Bcol.tip - 1.2, 44),
+    half: 1.05,
+  };
+  elevRails(EL.x, EL.z, EL.y0, EL.y1, EL.half);
+  {
+    const y = (Bcol.plats && Bcol.plats[0]) || 12;
+    beam([Bcol.x, y + 0.55, Bcol.z + Bcol.r + 0.15], [EL.x, y + 0.55, EL.z - EL.half * 0.35], 0.2, 'ink');
+    box((Bcol.x + EL.x) * 0.5, y + 0.28, (Bcol.z + Bcol.r + EL.z) * 0.5, 0.9, 0.16, Math.max(1.2, Math.abs(EL.z - Bcol.z - Bcol.r) * 0.55), 'deck');
+  }
+
+  cols.push(column({ x: 38.5, z: -6.8, r: 1.7, h: 28, mat: 'shade', ladder: false, pgap: 14, sides: 14 }));
+  const backV = column({ x: 54.5, z: -7.4, r: 1.9, h: 34, mat: 'ink', ladder: true, lang: 2.4, pgap: 16, sides: 14, vent: true });
+  cols.push(backV);
+
+  /* heater / flare stacks — darker verticals without external piping */
+  stack(47.8, -3.2, 42, 1.15, 'ink');
+  stack(68.4, 1.2, 38, 0.95, 'night');
+
+  const E = column({ x: 71, z: 8.2, r: 1.35, h: 32, mat: 'paper', lang: 0.2, plat: 1.2, pgap: 12, sides: 14 });
+  cols.push(E);
+  lattice(E.x, E.z, E.tip + 1.2, E.r, { clear: 1.65, bay: 8.2, post: 0.55, girt: 0.34, brace: 0.28 });
+
+  /* bottle cluster by the house */
+  for (let i = 0; i < 6; i++) {
+    const x = 19.2 + (i % 3) * 2.15;
+    const z = 13.4 + Math.floor(i / 3) * 2.25;
+    const hh = 5.4 + (i % 3) * 1.3;
+    loftY(x, z, [{ t: 0.3, ra: 0.62, rb: 0.62 }, { t: hh, ra: 0.62, rb: 0.62 }], 10, i % 2 ? 'paper' : 'shade');
+    loftY(x, z, headRings(hh - 0.02, 0.62, 1, 3), 10, 'dish');
+    box(x, 0.2, z, 1.5, 0.4, 1.5, 'deck');
+  }
+
+  /* shell-and-tube exchangers on grade in front of the columns */
+  vesselX(30.2, 38.4, 2.15, 15.6, 1.45, 'shade');
+  vesselX(41.6, 51.2, 2.35, 16.4, 1.7, 'paper');
+  vesselX(54.4, 63.6, 1.85, 15.2, 1.35, 'shade');
+  /* reflux / feed drums parallel to the rack, under the columns */
+  vesselX(32.4, 39.6, 1.55, 8.4, 1.05, 'pipe');
+  vesselX(46.8, 55.2, 1.45, 9.2, 1.15, 'pipe');
+  vesselX(58.2, 66.0, 1.35, 8.8, 0.95, 'shade');
+
+  /* ---------- process piping (orthogonal, one duty per line) ---------- */
+  /* pipeway at z=10.2: low header is bottoms / product only, not feed */
+  route([[30, 2.05, 10.2], [67.8, 2.05, 10.2]], 0.62, 'pipe', { sides: 10 });
+  for (let x = 32; x <= 68; x += 7.5) {
+    beam([x, 0, 9.3], [x, 2.05, 9.3], 0.32, 'ink');
+    beam([x, 0, 11.0], [x, 2.05, 11.0], 0.28, 'ink');
+    beam([x, 2.05, 9.3], [x, 2.05, 11.0], 0.24, 'shade');
+  }
+
+  const B = cols[1];
+  const C = cols[2];
+  const A = cols[0];
+
+  /* feed: rack → preheat exchanger (left shell) → mid-feed on slender column B */
+  route([
+    [36, 4.2, 23.2 - 1.05],
+    [36, 4.2, 15.6],
+    [36, 2.15 + 1.45, 15.6],
+  ], 0.42, 'pipe', { sides: 8, bend: 1.1 });
+  route([
+    [38.4, 2.15, 15.6],
+    [40.6, 2.15, 15.6],
+    [40.6, 2.15, 10.2],
+    [B.x, 2.15, 10.2],
+    [B.x, 20, 10.2],
+    [B.x, 20, B.z + B.r],
+  ], 0.44, 'pipe', { sides: 8, bend: 1.2 });
+
+  /* B overhead vapor → elevated condenser (distillation silhouette) */
+  {
+    const crown = B.top + 5.2;
+    const condY = B.top - 2.4;
+    vesselX(B.x + 3.4, B.x + 8.6, condY, B.z + 0.2, 0.95, 'dish');
+    route([
+      [B.x, B.top, B.z],
+      [B.x, crown, B.z],
+      [B.x + 6.0, crown, B.z + 0.2],
+      [B.x + 6.0, condY + 0.95, B.z + 0.2],
+    ], 0.78, 'pipe', { sides: 12, bend: 1.7 });
+    /* condensate drops onto the middle reflux drum; reflux is pumped (below) */
+    route([
+      [B.x + 8.6, condY, B.z + 0.2],
+      [B.x + 8.6, condY, 9.2],
+      [B.x + 8.6, 1.45 + 1.15, 9.2],
+    ], 0.4, 'pipe', { sides: 8, bend: 1.15 });
+  }
+
+  /* B thermosiphon reboiler: liquid and vapor stay east of the feed riser */
+  route([
+    [44.5, 3.5, 8.85],
+    [46.6, 3.5, 8.85],
+    [46.6, 3.5, 16.4],
+    [46.6, 2.35, 16.4],
+  ], 0.46, 'pipe', { sides: 8, bend: 1.0 });
+  route([
+    [48.4, 2.35 + 1.7, 16.4],
+    [48.4, 6.4, 16.4],
+    [48.4, 6.4, 9.15],
+    [44.9, 6.4, 9.15],
+    [44.9, 6.4, 8.15],
+  ], 0.5, 'pipe', { sides: 10, bend: 1.15 });
+
+  /* C overhead: small elevated condenser, then condensate into the east drum clear of D's posts */
+  {
+    const condY = C.top - 1.55;
+    const condZ = C.z + 4.85;
+    const condR = 0.66;
+    const x0 = C.x + 1.15;
+    const x1 = C.x + 4.85;
+    vesselX(x0, x1, condY, condZ, condR, 'dish');
+    route([
+      [C.x, C.top, C.z],
+      [C.x, C.top + 2.4, C.z],
+      [C.x, C.top + 2.4, condZ],
+      [(x0 + x1) * 0.5, C.top + 2.4, condZ],
+      [(x0 + x1) * 0.5, condY + condR, condZ],
+    ], 0.48, 'pipe', { sides: 10, bend: 1.15 });
+    route([
+      [x1, condY, condZ],
+      [x1, condY, 12.6],
+      [x1, 3.35, 12.6],
+      [60.3, 3.35, 12.6],
+      [60.3, 3.35, 9.7],
+      [60.3, 1.9, 9.7],
+    ], 0.32, 'pipe', { sides: 8, bend: 0.95 });
+  }
+
+  /* mid-elevation transfer on the pipeway: fat column C → lattice tower D */
+  route([
+    [C.x, 22.5, C.z + C.r * 1.12],
+    [C.x, 22.5, 10.2],
+    [D.x, 22.5, 10.2],
+    [D.x, 22.5, D.z + D.r],
+  ], 0.58, 'pipe', { sides: 10, bend: 1.2 });
+  /* south-side sleepers under that run — not a second rack. North leg would sit in the drums. */
+  {
+    const yBeam = 21.72;
+    for (const x of [54.0, 57.6, 60.8]) {
+      beam([x, 0, 11.15], [x, yBeam, 11.15], 0.3, 'ink');
+      beam([x, 0, 12.05], [x, yBeam, 12.05], 0.24, 'ink');
+      beam([x, yBeam, 12.05], [x, yBeam, 10.2], 0.26, 'shade');
+      beam([x, 5.5, 11.15], [x, 5.5, 12.05], 0.18, 'shade');
+    }
+  }
+
+  /* D overhead: vapor into the condenser, condensate to its own drum, reflux just below the head */
+  {
+    const condY = D.top - 2.0;
+    const condR = 0.82;
+    vesselX(D.x + 3.0, D.x + 7.2, condY, D.z + 0.15, condR, 'dish');
+    route([
+      [D.x, D.top, D.z],
+      [D.x, D.top + 2.6, D.z],
+      [D.x + 5.1, D.top + 2.6, D.z + 0.15],
+      [D.x + 5.1, condY + condR, D.z + 0.15],
+    ], 0.52, 'pipe', { sides: 10, bend: 1.45 });
+    const drum = { x0: 66.15, x1: 70.35, y: 1.5, z: 3.75, r: 0.72 };
+    vesselX(drum.x0, drum.x1, drum.y, drum.z, drum.r, 'pipe');
+    route([
+      [D.x + 7.2, condY, D.z + 0.15],
+      [D.x + 7.2, condY, drum.z],
+      [D.x + 7.2, drum.y + drum.r, drum.z],
+    ], 0.32, 'pipe', { sides: 8, bend: 0.95 });
+    const refY = D.h - 1.45;
+    route([
+      [drum.x0, drum.y, drum.z],
+      [drum.x0, refY, drum.z],
+      [drum.x0, refY, D.z],
+      [D.x + D.r - 0.18, refY, D.z],
+    ], 0.3, 'pipe', { sides: 8, bend: 0.95 });
+  }
+
+  /* D thermosiphon reboiler on the right-hand exchanger */
+  route([
+    [D.x, 3.2, D.z + D.r],
+    [D.x, 3.2, 15.2],
+    [D.x, 1.85, 15.2],
+  ], 0.4, 'pipe', { sides: 8, bend: 1.0 });
+  route([
+    [62.8, 1.85 + 1.35, 15.2],
+    [62.8, 6.1, 15.2],
+    [62.8, 6.1, 7.15],
+  ], 0.44, 'pipe', { sides: 8, bend: 1.1 });
+
+  /* bottoms stay on the product header, never the feed or the sphere export */
+  /* C skirts through the gap between the middle and east drums */
+  route([
+    [C.x, 3.35, C.z + C.r * 0.9],
+    [C.x, 3.35, 6.45],
+    [56.15, 3.35, 6.45],
+    [56.15, 3.35, 10.2],
+    [56.15, 2.05, 10.2],
+  ], 0.34, 'pipe', { sides: 8, bend: 0.95 });
+  /* B takeoff on the west skirt, clear of the reboiler draw and the feed line */
+  route([
+    [B.x - B.r * 0.9, 4.15, B.z],
+    [36.9, 4.15, B.z],
+    [36.9, 4.15, 10.2],
+    [36.9, 2.05, 10.2],
+  ], 0.32, 'pipe', { sides: 8, bend: 0.9 });
+  /* D takeoff leaves above the lattice bay brace, then drops to the header */
+  route([
+    [D.x + D.r * 0.88, 7.7, D.z],
+    [67.6, 7.7, D.z],
+    [67.6, 7.7, 11.35],
+    [67.6, 2.05, 11.35],
+    [67.6, 2.05, 10.2],
+  ], 0.32, 'pipe', { sides: 8, bend: 0.9 });
+  /* left drum is A's bottoms boot */
+  route([
+    [A.x, 3.55, A.z + A.r * 0.9],
+    [A.x, 3.55, 7.5],
+    [A.x, 1.55, 7.5],
+  ], 0.32, 'pipe', { sides: 8, bend: 0.9 });
+
+  /* pipe rack — three running lines; feed already leaves at x=36 */
+  {
+    const x0 = 20, x1 = 76, z = 23.2;
+    for (let x = x0; x <= x1; x += 7.2) {
+      beam([x, 0, z - 1.85], [x, 11.1, z - 1.85], 0.62, 'ink');
+      beam([x, 0, z + 1.85], [x, 11.1, z + 1.85], 0.62, 'ink');
+      beam([x, 11.05, z - 1.85], [x, 11.05, z + 1.85], 0.66, 'ink');
+      beam([x, 7.15, z - 1.85], [x, 7.15, z + 1.85], 0.42, 'shade');
+      beam([x, 4.35, z - 1.85], [x, 4.35, z + 1.85], 0.4, 'shade');
+      beam([x, 0.3, z - 1.85], [x, 6.4, z + 1.85], 0.32, 'ink');
+    }
+    box((x0 + x1) / 2, 11.35, z, x1 - x0 + 0.6, 0.38, 4.05, 'deck');
+    beam([x0, 12.55, z - 1.9], [x1, 12.55, z - 1.9], 0.32, 'ink');
+    beam([x0, 12.55, z + 1.9], [x1, 12.55, z + 1.9], 0.32, 'ink');
+    beam([x0, 11.95, z - 1.9], [x1, 11.95, z - 1.9], 0.18, 'shade');
+    beam([x0, 11.95, z + 1.9], [x1, 11.95, z + 1.9], 0.18, 'shade');
+    for (let x = x0; x <= x1; x += 3.5) {
+      beam([x, 11.55, z - 1.9], [x, 12.55, z - 1.9], 0.24, 'ink');
+      beam([x, 11.55, z + 1.9], [x, 12.55, z + 1.9], 0.24, 'ink');
+    }
+    const lines = [
+      { y: 4.2, z: z - 1.05, r: 0.55 },
+      { y: 7.55, z: z + 0.15, r: 0.58 },
+      { y: 4.35, z: z + 1.05, r: 0.38 },
+    ];
+    for (const p of lines) route([[x0 - 0.6, p.y, p.z], [x1 + 0.8, p.y, p.z]], p.r, 'pipe', { sides: p.r > 0.5 ? 12 : 8 });
+    valve(33, 4.2, z - 1.05, 0.72);
+    valve(52, 7.55, z + 0.15, 0.78);
+  }
+
+  /* Horton sphere: own export onto the rack, not teed into bottoms */
+  route([
+    [25.5, 6.2, 7.2 + 3.2],
+    [25.5, 6.2, 10.2],
+    [25.5, 4.2, 10.2],
+    [25.5, 4.2, 23.2 - 1.05],
+  ], 0.4, 'pipe', { sides: 8, bend: 1.1 });
+
+  /* three pumps on a short skid, south of the exchangers and in front of the drums */
+  function pumpUnit(x, z) {
+    const g = 0.32;
+    box(x, g + 0.1, z, 2.35, 0.2, 1.05, 'deck');
+    box(x + 0.1, g + 0.62, z, 1.02, 0.7, 0.64, 'ink');
+    box(x - 0.82, g + 0.6, z, 0.88, 0.54, 0.54, 'shade');
+    box(x - 0.26, g + 0.6, z, 0.16, 0.16, 0.16, 'paper');
+    loftY(x, z, [{ t: g + 0.9, ra: 0.15, rb: 0.15 }, { t: g + 1.28, ra: 0.15, rb: 0.15 }], 8, 'pipe');
+  }
+  const P1 = { x: 40.35, z: 19.15 };
+  const P2 = { x: 52.9, z: 19.15 };
+  const P3 = { x: 65.2, z: 19.15 };
+  box(52.7, 0.2, 19.15, 29.2, 0.24, 1.7, 'deck');
+  pumpUnit(P1.x, P1.z);
+  pumpUnit(P2.x, P2.z);
+  pumpUnit(P3.x, P3.z);
+  valve(P1.x, 1.85, P1.z, 0.4);
+  valve(P2.x, 1.85, P2.z, 0.4);
+  valve(P3.x, 1.85, P3.z, 0.4);
+
+  /* P1: left-drum east head → pump → product header. Straight suction in the exchanger gap. */
+  route([
+    [40.05, 1.55, 8.4],
+    [P1.x, 1.55, 8.4],
+    [P1.x, 0.78, 8.4],
+    [P1.x, 0.78, P1.z - 0.48],
+  ], 0.26, 'pipe', { sides: 8, bend: 0.7 });
+  route([
+    [P1.x, 1.62, P1.z],
+    [P1.x, 4.9, P1.z],
+    [38.7, 4.9, P1.z],
+    [38.7, 4.9, 10.2],
+    [38.7, 2.05, 10.2],
+  ], 0.28, 'pipe', { sides: 8, bend: 0.85 });
+  beam([38.7, 0, 12.9], [38.7, 4.55, 12.9], 0.22, 'ink');
+  beam([38.7, 0, 18.15], [38.7, 4.55, 18.15], 0.2, 'ink');
+  beam([49.1, 0, 12.7], [49.1, 4.42, 12.7], 0.22, 'ink');
+
+  /* P2: middle drum → pump → reflux entering B just below the overhead */
+  route([
+    [55.85, 1.45, 9.2],
+    [55.85, 0.78, 9.2],
+    [55.85, 0.78, 13.05],
+    [P2.x, 0.78, 13.05],
+    [P2.x, 0.78, P2.z - 0.48],
+  ], 0.26, 'pipe', { sides: 8, bend: 0.75 });
+  {
+    const refY = B.top - 2.6;
+    const rx = 45.35;
+    const rz = 12.7;
+    route([
+      [P2.x, 1.62, P2.z],
+      [P2.x, 4.75, P2.z],
+      [P2.x, 4.75, rz],
+      [rx, 4.75, rz],
+      [rx, refY, rz],
+      [rx, refY, 10.35],
+      [B.x, refY, 10.35],
+      [B.x, refY, B.z + B.r * 0.86],
+    ], 0.34, 'pipe', { sides: 8, bend: 0.95 });
+  }
+
+  /* P3: east drum → pump → reflux entering C near the top of the shell */
+  route([
+    [P3.x, 1.35, 8.8 + 0.95],
+    [P3.x, 0.78, 8.8 + 0.95],
+    [P3.x, 0.78, P3.z - 0.48],
+  ], 0.26, 'pipe', { sides: 8, bend: 0.7 });
+  {
+    const refY = C.h - 1.65;
+    const rx = 53.85;
+    const rz = 7.4;
+    route([
+      [P3.x, 1.62, P3.z],
+      [P3.x, 4.55, P3.z],
+      [P3.x, 4.55, 13.2],
+      [rx, 4.55, 13.2],
+      [rx, 4.55, rz],
+      [rx, refY, rz],
+      [C.x, refY, rz],
+      [C.x, refY, C.z + C.r * 0.88],
+    ], 0.32, 'pipe', { sides: 8, bend: 0.9 });
+    for (const x of [56.4, 61.2]) beam([x, 0, 13.2], [x, 4.22, 13.2], 0.22, 'ink');
+  }
+
+  /* flare: one vent off the back column, low header, knockout drum, riser outside the stack */
+  {
+    const ko = { x0: 62.5, x1: 67.15, y: 1.68, z: -1.9, r: 0.76 };
+    vesselX(ko.x0, ko.x1, ko.y, ko.z, ko.r, 'shade');
+    const nz = backV.z - backV.r - 0.72;
+    route([
+      [backV.x, backV.top, backV.z],
+      [backV.x, backV.top + 1.65, backV.z],
+      [backV.x, backV.top + 1.65, nz],
+      [backV.x, 3.05, nz],
+      [64.8, 3.05, nz],
+      [64.8, 3.05, ko.z],
+      [64.8, ko.y + ko.r, ko.z],
+    ], 0.26, 'pipe', { sides: 8, bend: 0.85 });
+    for (const x of [57.6, 61.4]) beam([x, 0, nz], [x, 2.76, nz], 0.22, 'ink');
+    beam([64.8, 0, -6.1], [64.8, 2.76, -6.1], 0.22, 'ink');
+    route([
+      [ko.x1, ko.y, ko.z],
+      [69.95, ko.y, ko.z],
+      [69.95, ko.y, 1.2],
+      [69.95, 36.45, 1.2],
+      [69.15, 36.45, 1.2],
+    ], 0.26, 'pipe', { sides: 8, bend: 0.85 });
+  }
+
+  pennant(cols[0].x, cols[0].tip - 0.12, cols[0].z);
+
+  /* ---------- draw ---------- */
+  const cv = document.getElementById('gl');
+  const gl = cv.getContext('webgl', {
+    alpha: false, antialias: true, depth: true, stencil: false,
+    powerPreference: 'high-performance', preserveDrawingBuffer: true,
+  });
+  if (!gl) return;
+  const verts = new Float32Array(V);
+  const COUNT = verts.length / 8;
+
+  /* reciprocating elevator cab — small dynamic buffer rewritten each frame */
+  const elevCab = (() => {
+    if (typeof EL === 'undefined') return null;
+    const half = EL.half * 0.82;
+    const cabH = 2.35;
+    function buildAt(y) {
+      const EV = [];
+      const pushE = (p, c, sw, g) => { EV.push(p[0], p[1], p[2], c[0], c[1], c[2], sw || 0, g || 0); };
+      function triE(a, b, c, mat, interior, ao) {
+        if (!finite(a) || !finite(b) || !finite(c)) return;
+        const crv = cross(sub(b, a), sub(c, a));
+        const area = Math.hypot(crv[0], crv[1], crv[2]);
+        if (area < 1e-7) return;
+        let n = mul(crv, 1 / area);
+        if (interior && dot(n, sub(a, interior)) < 0) n = mul(n, -1);
+        const col = shade(n, mat, ao);
+        const g = mat === 'glow' ? 1 : 0;
+        pushE(a, col, 0, g); pushE(b, col, 0, g); pushE(c, col, 0, g);
+      }
+      function quadE(a, b, c, d, mat, interior, ao) {
+        triE(a, b, c, mat, interior, ao);
+        triE(a, c, d, mat, interior, ao);
+      }
+      function hullE(corners, mat, ao) {
+        const o = mul(corners.reduce(add, [0, 0, 0]), 1 / 8);
+        quadE(corners[0], corners[1], corners[2], corners[3], mat, o, ao);
+        quadE(corners[4], corners[5], corners[6], corners[7], mat, o, ao);
+        for (let i = 0; i < 4; i++) {
+          const j = (i + 1) % 4;
+          quadE(corners[i], corners[j], corners[j + 4], corners[i + 4], mat, o, ao);
+        }
+      }
+      function boxE(x, yy, z, w, h, d, mat) {
+        const P = (a, b, e) => [x + a * w / 2, yy + b * h / 2, z + e * d / 2];
+        hullE([
+          P(-1, -1, -1), P(1, -1, -1), P(1, -1, 1), P(-1, -1, 1),
+          P(-1, 1, -1), P(1, 1, -1), P(1, 1, 1), P(-1, 1, 1),
+        ], mat, aoAt(yy));
+      }
+      const cx = EL.x, cz = EL.z;
+      const y0 = y, y1 = y + cabH;
+      /* open cab between the guide rails — no duplicate corner posts */
+      boxE(cx, y0 + 0.1, cz, half * 1.85, 0.2, half * 1.55, 'deck');
+      boxE(cx, y1 - 0.08, cz, half * 1.85, 0.16, half * 1.55, 'paper');
+      /* kick + one mid rail on back and sides; front open toward column */
+      boxE(cx, y0 + 0.42, cz + half * 0.72, half * 1.7, 0.48, 0.07, 'ink');
+      boxE(cx - half * 0.9, y0 + 0.42, cz, 0.07, 0.48, half * 1.35, 'ink');
+      boxE(cx + half * 0.9, y0 + 0.42, cz, 0.07, 0.48, half * 1.35, 'ink');
+      boxE(cx, y0 + cabH * 0.55, cz + half * 0.72, half * 1.7, 0.1, 0.07, 'shade');
+      boxE(cx - half * 0.9, y0 + cabH * 0.55, cz, 0.07, 0.1, half * 1.35, 'shade');
+      boxE(cx + half * 0.9, y0 + cabH * 0.55, cz, 0.07, 0.1, half * 1.35, 'shade');
+      /* single counterweight outside right rail */
+      boxE(cx + half + 0.42, y0 + cabH * 0.5, cz + 0.15, 0.28, cabH * 0.55, 0.42, 'shade');
+      boxE(cx, y1 + 0.12, cz, 0.28, 0.24, 0.28, 'glow');
+      return new Float32Array(EV);
+    }
+    const buf = gl.createBuffer();
+    let lastY = -1e9;
+    let count = 0;
+    return {
+      draw(m, e, tAcc, uM, uE, uB, uN, uT, uF, prog) {
+        const span = EL.y1 - EL.y0 - cabH - 0.5;
+        const phase = RM || STILL ? 0.35 : (0.5 + 0.5 * Math.sin(tAcc * 0.42));
+        const y = EL.y0 + 0.4 + span * phase;
+        if (Math.abs(y - lastY) > 0.01) {
+          const data = buildAt(y);
+          count = data.length / 8;
+          gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+          gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+          lastY = y;
+        }
+        gl.useProgram(prog);
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+        gl.enableVertexAttribArray(0);
+        gl.enableVertexAttribArray(1);
+        gl.enableVertexAttribArray(2);
+        gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
+        gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, 12);
+        gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 32, 24);
+        gl.uniformMatrix4fv(uM, false, m);
+        gl.uniform3f(uE, e[0], e[1], e[2]);
+        gl.uniform3f(uB, 1, 1, 1);
+        gl.uniform3f(uN, NCOL[0], NCOL[1], NCOL[2]);
+        gl.uniform1f(uT, tAcc);
+        gl.uniform1f(uF, tAcc);
+        gl.drawArrays(gl.TRIANGLES, 0, count);
+      }
+    };
+  })();
+
+  const VS = `
+precision highp float;
+attribute vec3 p;
+attribute vec3 c;
+attribute vec2 s;
+uniform mat4 M;
+uniform vec3 E, B, N;
+uniform float T;
+varying vec3 C;
+void main(){
+  vec3 q = p;
+  if (s.x > 0.001) {
+    float w = sin(T * 1.7 + q.y * 0.62 + q.x * 0.35);
+    q.x += w * s.x;
+    q.z += cos(T * 1.25 + q.y * 0.5) * s.x * 0.42;
+    q.y -= abs(w) * s.x * 0.12;
+  }
+  float d = distance(q, E);
+  float fog = clamp(1.04 - d / 720.0, 0.78, 1.0);
+  vec3 k = c * N;
+  if (s.y > 0.5) { k = c; fog = mix(0.72, 1.0, fog); }
+  C = mix(B, k, fog);
+  gl_Position = M * vec4(q, 1.0);
+}`;
+  const FS = `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+varying vec3 C;
+uniform float F;
+void main(){
+  vec2 x = gl_FragCoord.xy;
+  vec2 g = floor(x / 1.5);
+  float n = fract(52.9829189 * fract(dot(g, vec2(0.06711056, 0.00583715))));
+  vec3 c = C + (n - 0.5) * 0.016;
+  c *= 0.972 + 0.028 * step(0.5, fract(x.y / 3.0));
+  c += 0.032 * smoothstep(0.94, 1.0, fract(x.y * 0.0007 - F * 0.05));
+  if (fract(sin(dot(floor(x / 2.0) + floor(F * 8.0), vec2(12.9898, 78.233))) * 43758.5453) > 0.9992) c = vec3(1.0);
+  gl_FragColor = vec4(c, 1.0);
+}`;
+  function link(vs, fs, attrs) {
+    const pr = gl.createProgram();
+    const sh = (type, src) => {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s));
+      gl.attachShader(pr, s);
+    };
+    sh(gl.VERTEX_SHADER, vs);
+    sh(gl.FRAGMENT_SHADER, fs);
+    attrs.forEach((name, i) => gl.bindAttribLocation(pr, i, name));
+    gl.linkProgram(pr);
+    if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) console.error(gl.getProgramInfoLog(pr));
+    return pr;
+  }
+  const prog = link(VS, FS, ['p', 'c', 's']);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+  const uM = gl.getUniformLocation(prog, 'M');
+  const uE = gl.getUniformLocation(prog, 'E');
+  const uB = gl.getUniformLocation(prog, 'B');
+  const uN = gl.getUniformLocation(prog, 'N');
+  const uT = gl.getUniformLocation(prog, 'T');
+  const uF = gl.getUniformLocation(prog, 'F');
+
+  const motes = (() => {
+    const N = 980, a = new Float32Array(N * 4);
+    let seed = 19;
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    for (let i = 0; i < N * 4; i++) a[i] = rnd();
+    const mvs = `
+precision highp float;
+attribute vec4 a;
+uniform mat4 M;
+uniform vec3 E;
+uniform float T, PX;
+varying float A;
+void main(){
+  float r = a.w;
+  vec3 Bsz = vec3(130.0, 96.0, 120.0);
+  vec3 w = a.xyz * Bsz + vec3(-28.0, 0.0, -16.0);
+  w.x += sin(T * (0.13 + r * 0.2) + r * 40.0) * 2.4;
+  w.y += T * (0.28 + r * 0.45);
+  w.z += cos(T * (0.11 + r * 0.16) + r * 22.0) * 2.4;
+  vec3 o = mod(w - E + Bsz * 0.5, Bsz) - Bsz * 0.5;
+  vec3 q = E + o;
+  float tw = 0.45 + 0.55 * sin(T * (0.7 + r * 1.3) + r * 50.0);
+  float edge = max(max(abs(o.x), abs(o.y)), abs(o.z)) / (Bsz.x * 0.5);
+  A = (0.72 + 0.62 * tw * tw) * (1.0 - smoothstep(0.72, 1.0, edge)) * smoothstep(1.4, 6.5, length(o));
+  gl_Position = M * vec4(q, 1.0);
+  gl_PointSize = clamp((2.9 + 4.6 * fract(r * 13.0)) * PX / max(gl_Position.w, 0.001), 1.8, 12.5);
+}`;
+    const mfs = `
+precision highp float;
+uniform vec3 H;
+varying float A;
+void main(){
+  float d = length(gl_PointCoord - 0.5) * 2.0;
+  float c = 1.0 - smoothstep(0.0, 0.5, d);
+  float h = (1.0 - smoothstep(0.08, 1.0, d)) * 0.72;
+  gl_FragColor = vec4(mix(H, vec3(1.0), c), max(c, h) * A);
+}`;
+    const pr = link(mvs, mfs, ['a']);
+    const b = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, b);
+    gl.bufferData(gl.ARRAY_BUFFER, a, gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(pr, 'a');
+    const uu = {};
+    for (const name of ['M', 'E', 'T', 'PX', 'H']) uu[name] = gl.getUniformLocation(pr, name);
+    return { draw(m, e, t) {
+      gl.useProgram(pr);
+      gl.bindBuffer(gl.ARRAY_BUFFER, b);
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, 4, gl.FLOAT, false, 16, 0);
+      gl.uniformMatrix4fv(uu.M, false, m);
+      gl.uniform3f(uu.E, e[0], e[1], e[2]);
+      gl.uniform1f(uu.T, t);
+      gl.uniform3f(uu.H, 0.58, 0.90, 0.97);
+      gl.uniform1f(uu.PX, Math.hypot(m[1], m[5], m[9]) * gl.drawingBufferHeight * 0.5);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.depthMask(false);
+      gl.drawArrays(gl.POINTS, 0, N);
+      gl.depthMask(true);
+      gl.disable(gl.BLEND);
+      gl.disableVertexAttribArray(loc);
+    }};
+  })();
+
+  gl.enable(gl.DEPTH_TEST);
+  gl.clearColor(1, 1, 1, 1);
+  const M = new Float32Array(16);
+  let roll = 0;
+  function look(e, tg, fov, w, h) {
+    const f = norm(sub(tg, e));
+    const r0 = norm(cross(f, [0, 1, 0]));
+    const u0 = cross(r0, f);
+    const cs = Math.cos(roll), sn = Math.sin(roll);
+    const r = add(mul(r0, cs), mul(u0, sn));
+    const up = sub(mul(u0, cs), mul(r0, sn));
+    const n = 1 / Math.tan(fov * Math.PI / 360);
+    const near = 0.35, far = 900, asp = w / Math.max(1, h);
+    const Pa = (far + near) / (near - far), Pb = 2 * far * near / (near - far), fe = dot(f, e);
+    M[0] = r[0] * n / asp; M[1] = up[0] * n; M[2] = -f[0] * Pa; M[3] = f[0];
+    M[4] = r[1] * n / asp; M[5] = up[1] * n; M[6] = -f[1] * Pa; M[7] = f[1];
+    M[8] = r[2] * n / asp; M[9] = up[2] * n; M[10] = -f[2] * Pa; M[11] = f[2];
+    M[12] = -dot(r, e) * n / asp; M[13] = -dot(up, e) * n; M[14] = Pa * fe + Pb; M[15] = -fe;
+  }
+
+  const STOPS = [
+    { e: [6, 11, 62], t: [28, 28, 5], f: 46, roll: -0.05 },
+    { e: [18, 15, 48], t: [42, 36, 3], f: 42, roll: -0.025 },
+    { e: [32, 20, 38], t: [54, 44, 1], f: 40, roll: 0.0 },
+    { e: [44, 30, 32], t: [62, 50, -1], f: 38, roll: 0.018 },
+    { e: [12, 13, 70], t: [40, 32, 4], f: 50, roll: -0.035 },
+  ];
+  const cr = (a, b, c, d, t) => 0.5 * (2 * b + (c - a) * t + (2 * a - 5 * b + 4 * c - d) * t * t + (3 * b - a - 3 * c + d) * t * t * t);
+  function sample(u, pick) {
+    const N = STOPS.length - 1;
+    const x = Math.min(Math.max(u, 0), 0.9999) * N;
+    const i = Math.floor(x), t = x - i;
+    const at = k => pick(STOPS[Math.max(0, Math.min(N, k))]);
+    const a = at(i - 1), b = at(i), c = at(i + 1), d = at(i + 2);
+    return Array.isArray(b) ? b.map((_, k) => cr(a[k], b[k], c[k], d[k], t)) : cr(a, b, c, d, t);
+  }
+
+  let cssW = 0, cssH = 0;
+  function fit() {
+    const w = innerWidth, h = innerHeight;
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    if (w === cssW && h === cssH && cv.width) return;
+    cssW = w; cssH = h;
+    cv.width = Math.max(1, Math.round(w * dpr));
+    cv.height = Math.max(1, Math.round(h * dpr));
+    gl.viewport(0, 0, cv.width, cv.height);
+  }
+  const maxS = () => Math.max(1, document.documentElement.scrollHeight - innerHeight);
+  if (AT != null) {
+    window.scrollTo(0, AT * maxS());
+  }
+  let sy = window.scrollY;
+  let cur = AT != null ? (window.scrollY / maxS()) : Math.min(1, sy / maxS());
+  addEventListener('scroll', () => { sy = window.scrollY; }, { passive: true });
+  addEventListener('resize', () => { fit(); }, { passive: true });
+
+  let intro = (RM || STILL) ? 1 : 0;
+  let tAcc = STILL ? 1.15 : 0;
+  let last = 0;
+  function draw(now) {
+    const dt = Math.min(0.05, last ? (now - last) / 1000 : 0.016);
+    last = now;
+    if (!RM && !STILL) tAcc += dt;
+    const goal = Math.min(1, sy / maxS());
+    if (STILL || RM) cur = goal;
+    else cur += (goal - cur) * (1 - Math.exp(-dt * 7));
+    if (intro < 1) intro = Math.min(1, intro + dt / 1.45);
+    fit();
+    let e = sample(cur, s => s.e).slice();
+    let tg = sample(cur, s => s.t).slice();
+    let fov = sample(cur, s => s.f);
+    roll = sample(cur, s => s.roll);
+    /* screen-right: truck eye+target left together */
+    e[0] -= 5.0;
+    tg[0] -= 5.0;
+    const portrait = cv.width < cv.height;
+    if (portrait) fov = Math.min(78, fov * 1.38);
+    if (!STILL && !RM) {
+      e[0] += Math.sin(tAcc * 0.17) * 0.5;
+      e[1] += Math.sin(tAcc * 0.13 + 1.2) * 0.22;
+      e[2] += Math.cos(tAcc * 0.11) * 0.35;
+    }
+    const lift = 1 - intro;
+    const ease = lift * lift * (3 - 2 * lift);
+    e[1] += ease * 26;
+    tg[1] += ease * 26;
+    look(e, tg, fov, cv.width, cv.height);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(prog);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.enableVertexAttribArray(0);
+    gl.enableVertexAttribArray(1);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
+    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, 12);
+    gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 32, 24);
+    gl.uniformMatrix4fv(uM, false, M);
+    gl.uniform3f(uE, e[0], e[1], e[2]);
+    gl.uniform3f(uB, 1, 1, 1);
+    gl.uniform3f(uN, NCOL[0], NCOL[1], NCOL[2]);
+    gl.uniform1f(uT, tAcc);
+    gl.uniform1f(uF, tAcc);
+    gl.drawArrays(gl.TRIANGLES, 0, COUNT);
+    if (elevCab) elevCab.draw(M, e, RM || STILL ? 1.15 : tAcc, uM, uE, uB, uN, uT, uF, prog);
+    motes.draw(M, e, RM || STILL ? 1.15 : tAcc);
+  }
+  fit();
+  draw(performance.now());
+  const loop = now => { draw(now); requestAnimationFrame(loop); };
+  requestAnimationFrame(loop);
+
+  /* grain tile, same family as the reference page */
+  {
+    const N = 159, c = document.createElement('canvas');
+    c.width = c.height = N;
+    const x = c.getContext('2d'), img = x.createImageData(N, N), a = img.data;
+    let seed = 11;
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    for (let i = 0, y = 0; y < N; y++) for (let e = 0; e < N; e++, i += 4) {
+      const r = rnd();
+      let v = [0, 0, 0, 0];
+      if (r < 0.1) v = [10, 48, 72, 13 + rnd() * 18];
+      else if (r < 0.18) v = [255, 255, 255, 28 + rnd() * 40];
+      if (r > 0.2 && r < 0.206) v = [80, 210, 220, 64];
+      if (y % 3 === 2 && v[3] < 8) v = [10, 50, 78, 8];
+      a[i] = v[0]; a[i + 1] = v[1]; a[i + 2] = v[2]; a[i + 3] = v[3];
+    }
+    x.putImageData(img, 0, 0);
+    const G = document.getElementById('grade');
+    G.style.backgroundImage = `url(${c.toDataURL()})`;
+    if ((devicePixelRatio || 1) >= 1.5) G.style.backgroundSize = `${N / 2}px ${N / 2}px`;
+  }
+  {
+    const art = k => {
+      const c = document.createElement('canvas');
+      c.width = 15 * k; c.height = 21 * k;
+      const x = c.getContext('2d');
+      x.fillStyle = '#000';
+      x.fillRect(5 * k, 0, 5 * k, 21 * k);
+      x.fillRect(0, 4 * k, 15 * k, 5 * k);
+      x.fillStyle = '#fff';
+      x.fillRect(6 * k, k, 3 * k, 19 * k);
+      x.fillRect(k, 5 * k, 13 * k, 3 * k);
+      return `url(${c.toDataURL()})`;
+    };
+    const one = art(1);
+    const set = `image-set(${one} 1x, ${art(2)} 2x) 7 6, move`;
+    const root = document.documentElement;
+    root.style.setProperty('--xcur', CSS.supports('cursor', set) ? set : one + ' 7 6, move');
+    const df = set.replace(', move', ', default');
+    root.style.setProperty('--xdef', CSS.supports('cursor', df) ? df : one + ' 7 6, default');
+  }
+
+
+})();
+</script>
+</body>
+</html>
