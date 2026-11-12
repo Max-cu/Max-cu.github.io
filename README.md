@@ -1,8 +1,8 @@
 WebGL 化工厂场景，视觉风格仿照 [/0z5a](https://0z5a.github.io/)。
 
-在线预览：https://max-cu.github.io/
+在线预览：https://max-cu.github.io/homepage/
 
-The typography homepage now lives at `homepage/index.html` (live at https://max-cu.github.io/homepage/). The repo root only redirects there.
+The typography homepage is at `homepage/index.html` (live at https://max-cu.github.io/homepage/). https://max-cu.github.io/ does not auto-open that page.
 
 ## Components
 
