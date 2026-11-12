@@ -2,6 +2,8 @@ WebGL 化工厂场景，视觉风格仿照 [/0z5a](https://0z5a.github.io/)。
 
 在线预览：https://max-cu.github.io/
 
+The typography homepage now lives at `homepage/index.html` (live at https://max-cu.github.io/homepage/). The repo root only redirects there.
+
 ## Components
 
 - `components/ice-flower-growth.html`
@@ -15,4 +17,4 @@ WebGL 化工厂场景，视觉风格仿照 [/0z5a](https://0z5a.github.io/)。
 - `components/design-cards/02-drawings.jpg`
 - `components/design-cards/03-procurement.jpg`
 
-The pixel logos are code-drawn standalone HTML (SkillGo, JiLin University, CUHK). `ice-flower-growth.html` is the standalone Creativity flower. The design-cards are the Design screenshots used on the page.
+SkillGo is a particle logo (粒子 logo). JiLin University and CUHK are university marks (校徽). `ice-flower-growth.html` is the standalone Creativity flower. The design-cards are the Design screenshots used on the page.
