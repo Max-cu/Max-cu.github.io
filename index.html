@@ -178,10 +178,10 @@ body::-webkit-scrollbar{display:none}
 }
 #caps button.chip:hover,
 #caps button.chip[aria-expanded="true"]{opacity:.86}
+#caps li{min-height:0}
 #caps .panel-slot{
   display:grid;
   grid-template-rows:0fr;
-  height:0;
   opacity:0;
   transform:translate3d(0,-10px,0);
   overflow:hidden;
@@ -191,22 +191,17 @@ body::-webkit-scrollbar{display:none}
   transition:
     grid-template-rows .66s cubic-bezier(.16,1,.3,1),
     opacity .5s cubic-bezier(.16,1,.3,1),
-    transform .66s cubic-bezier(.16,1,.3,1),
-    padding-top .66s cubic-bezier(.16,1,.3,1);
+    transform .66s cubic-bezier(.16,1,.3,1);
   pointer-events:none;
 }
 #caps[data-open="agent"] #slot-agent,
 #caps[data-open="design"] #slot-design,
 #caps[data-open="creativity"] #slot-creativity{
   grid-template-rows:1fr;
-  height:auto;
   opacity:1;
   transform:translate3d(0,0,0);
   pointer-events:auto;
 }
-#caps[data-open="agent"] #slot-agent{padding-top:16px}
-#caps[data-open="design"] #slot-design{padding-top:26px}
-#caps[data-open="creativity"] #slot-creativity{padding-top:16px}
 #slot-design,
 #slot-creativity{
   opacity:1;
@@ -218,6 +213,10 @@ body::-webkit-scrollbar{display:none}
   margin:0;
 }
 #caps .panel-slot > #panel-design{
+  overflow:hidden;
+}
+#caps[data-open="design"] #slot-design.is-settled,
+#caps[data-open="design"] #slot-design.is-settled > #panel-design{
   overflow:visible;
 }
 #panel-agent{
@@ -228,6 +227,7 @@ body::-webkit-scrollbar{display:none}
   margin:0;
   padding:0 0 4px;
 }
+#panel-agent::before{content:"";display:block;flex:none;width:0;height:16px}
 #caps .entry,
 #caps .soon{
   display:inline-flex;
@@ -276,27 +276,20 @@ body::-webkit-scrollbar{display:none}
 #caps[data-open="agent"] #panel-agent .entry:nth-child(1){transition-delay:.08s}
 #caps[data-open="agent"] #panel-agent .entry:nth-child(2){transition-delay:.16s}
 #caps[data-open="agent"] #panel-agent .soon{transition-delay:.24s}
-@property --rx{syntax:"<angle>";inherits:false;initial-value:0deg}
-@property --tx{syntax:"<length>";inherits:false;initial-value:0px}
-@property --ty{syntax:"<length>";inherits:false;initial-value:0px}
-@property --lift{syntax:"<length>";inherits:false;initial-value:0px}
-@property --sc{syntax:"<number>";inherits:false;initial-value:1}
 #panel-design{
   display:block;
   margin:0;
-  padding:0 22px 22px 6px;
+  padding:0;
 }
 #panel-design .fan{
   position:relative;
   width:220px;
   height:260px;
+  margin:26px 22px 22px 6px;
 }
 #panel-design .dcard{
-  --rx:0deg;
-  --tx:0px;
-  --ty:0px;
-  --lift:0px;
-  --sc:1;
+  --hx:0px;
+  --hy:0px;
   position:absolute;
   left:0;top:0;
   width:168px;
@@ -309,13 +302,8 @@ body::-webkit-scrollbar{display:none}
     0 0 0 1px var(--line),
     5px 5px 0 rgba(11,58,78,.16);
   transform-origin:center center;
-  transform:rotate(var(--rx)) translate(var(--tx), calc(var(--ty) + var(--lift))) scale(var(--sc));
   transition:
-    --rx .66s cubic-bezier(.22,.8,.28,1),
-    --tx .66s cubic-bezier(.22,.8,.28,1),
-    --ty .66s cubic-bezier(.22,.8,.28,1),
-    --lift .72s cubic-bezier(.16,1,.3,1),
-    --sc .72s cubic-bezier(.16,1,.3,1),
+    transform .66s cubic-bezier(.22,.8,.28,1),
     box-shadow .72s cubic-bezier(.16,1,.3,1);
   overflow:hidden;
   cursor:default;
@@ -334,26 +322,27 @@ body::-webkit-scrollbar{display:none}
   vertical-align:middle;
 }
 /* Closed: a single pile, top card in front. Open: the pile is drawn apart as the slot uncovers it. */
-#panel-design .dcard:nth-child(1){--rx:-1.1deg;--tx:0px;--ty:0px;z-index:3}
-#panel-design .dcard:nth-child(2){--rx:1deg;--tx:5px;--ty:6px;z-index:2}
-#panel-design .dcard:nth-child(3){--rx:-.5deg;--tx:2px;--ty:11px;z-index:1}
+#panel-design .dcard:nth-child(1){transform:rotate(-1.1deg) translate(0px,0px);z-index:3}
+#panel-design .dcard:nth-child(2){transform:rotate(1deg) translate(5px,6px);z-index:2}
+#panel-design .dcard:nth-child(3){transform:rotate(-.5deg) translate(2px,11px);z-index:1}
 #caps[data-open="design"] #panel-design .dcard:nth-child(1){
-  --rx:-2.4deg;--tx:0px;--ty:0px;z-index:1;
+  --hx:0px;--hy:0px;
+  transform:rotate(-2.4deg) translate(0px,0px);z-index:1;
   transition-delay:0s;
 }
 #caps[data-open="design"] #panel-design .dcard:nth-child(2){
-  --rx:1deg;--tx:16px;--ty:62px;z-index:2;
+  --hx:16px;--hy:62px;
+  transform:rotate(1deg) translate(16px,62px);z-index:2;
   transition-delay:.07s;
 }
 #caps[data-open="design"] #panel-design .dcard:nth-child(3){
-  --rx:2.8deg;--tx:6px;--ty:126px;z-index:3;
+  --hx:6px;--hy:126px;
+  transform:rotate(2.8deg) translate(6px,126px);z-index:3;
   transition-delay:.14s;
 }
 #caps[data-open="design"] #panel-design .dcard:hover,
 #caps[data-open="design"] #panel-design .dcard:focus-within{
-  --lift:-14px;
-  --sc:1.035;
-  --rx:0deg;
+  transform:rotate(0deg) translate(var(--hx), calc(var(--hy) - 14px)) scale(1.035);
   z-index:6;
   transition-delay:0s;
   box-shadow:
@@ -369,7 +358,7 @@ body::-webkit-scrollbar{display:none}
   position:relative;
   width:min(292px, calc(100vw - 64px));
   height:min(400px, 54vh);
-  margin-left:-8px;
+  margin:16px 0 0 -8px;
   box-sizing:border-box;
   background:transparent;
   border:0;
@@ -2113,13 +2102,27 @@ void main(){
         + ulGap * Math.max(0, chips.length - 1);
       caps.style.setProperty('--caps-ay', (-h / 2).toFixed(2) + 'px');
     };
+    const slots = [...caps.querySelectorAll('.panel-slot')];
+    const slotOf = id => id ? document.getElementById('slot-' + id) : null;
+    const motionOff = () =>
+      document.documentElement.classList.contains('still')
+      || matchMedia('(prefers-reduced-motion: reduce)').matches;
     const setOpen = id => {
       const next = id || '';
+      slots.forEach(s => s.classList.remove('is-settled'));
       caps.dataset.open = next;
       caps.querySelectorAll('[data-panel]').forEach(btn => {
         btn.setAttribute('aria-expanded', btn.getAttribute('data-panel') === next ? 'true' : 'false');
       });
+      if (next && motionOff()) slotOf(next)?.classList.add('is-settled');
     };
+    slots.forEach(slot => {
+      slot.addEventListener('transitionend', ev => {
+        if (ev.target !== slot || ev.propertyName !== 'grid-template-rows') return;
+        const open = caps.dataset.open || '';
+        if (open && slot === slotOf(open)) slot.classList.add('is-settled');
+      });
+    });
     caps.addEventListener('click', ev => {
       const btn = ev.target.closest('[data-panel]');
       if (!btn || !caps.contains(btn)) return;
@@ -2127,7 +2130,16 @@ void main(){
       setOpen(caps.dataset.open === id ? '' : id);
     });
     const q = new URLSearchParams(location.search).get('open');
-    if (q) setOpen(q);
+    if (q) {
+      setOpen(q);
+      requestAnimationFrame(() => {
+        const s = slotOf(q);
+        if (s && caps.dataset.open === q) s.classList.add('is-settled');
+      });
+    }
+    caps.querySelectorAll('#panel-design img').forEach(img => {
+      if (img.decode) img.decode().catch(() => {});
+    });
     measureAnchor();
     addEventListener('resize', measureAnchor, { passive: true });
   })();
@@ -2143,6 +2155,9 @@ void main(){
   const aqua = '#7fd9e4';
   const line = '#4fb9c9';
   const deep = '#0b3a4e';
+  const inkDeep = '#4f7180';
+  const inkLine = '#76c8d5';
+  const inkAqua = '#9be1ea';
   const D = Math.PI / 180;
   let lastW = 0, lastH = 0;
 
@@ -2353,7 +2368,7 @@ void main(){
       const up = norm(cross(side, tng));
       const p = add(stemPoint(u), add(mul(side, Math.cos(ang)*rad*0.16), mul(up, Math.sin(ang)*rad*0.16)));
       const glyph = hash(i*41+5) < 0.22 ? (hash(i*43+2)<0.5?'0':'1') : null;
-      push({ kind:'stem', u, p, born: lerp(T.stem0, T.stem1, u)+hash(i)*0.18, settle: 0.5+hash(i*3)*0.55, glyph, size: glyph?1: lerp(2.0, 1.15, u), col: hash(i*11)<0.35?deep:line });
+      push({ kind:'stem', u, p, born: lerp(T.stem0, T.stem1, u)+hash(i)*0.18, settle: 0.5+hash(i*3)*0.55, glyph, size: glyph?1: lerp(2.0, 1.15, u), col: hash(i*11)<0.35?inkDeep:inkLine });
     }
 
     /* leaves */
@@ -2370,7 +2385,7 @@ void main(){
           born: LEAF_T[li].grow0 + u*(LEAF_T[li].grow1-LEAF_T[li].grow0)*0.88 + hash(i)*0.28,
           settle: 0.45+hash(i*5)*0.7,
           glyph, size: glyph?1: lerp(1.85, 1.2, u),
-          col: hash(i*7)<0.4?deep:aqua
+          col: hash(i*7)<0.4?inkDeep:inkAqua
         });
       }
     });
@@ -2391,7 +2406,7 @@ void main(){
           born: T.bud0 + u*(T.bud1-T.bud0)*0.88 + spec.delay*0.9 + hash(i)*0.25,
           settle: 0.45+hash(i*9)*0.7,
           glyph, size: glyph?1: lerp(1.9, 1.25, u),
-          col: spec.whorl===2?deep:(hash(i*3)<0.45?line:aqua)
+          col: spec.whorl===2?inkDeep:(hash(i*3)<0.45?inkLine:inkAqua)
         });
       }
     });
@@ -2405,7 +2420,7 @@ void main(){
         settle: 0.35+hash(i)*1.0,
         glyph: hash(i*13)<0.40 ? (hash(i*17)<0.5?'0':'1') : null,
         size: 1,
-        col: hash(i)<0.5?deep:line,
+        col: hash(i)<0.5?inkDeep:inkLine,
         wander: hash(i*19)
       });
     }
